@@ -31,12 +31,13 @@ REQUESTS_TIMEOUT = 90
 
 # --- Modos de Operação ---
 RUN_CLONE_DMO = os.getenv("RUN_CLONE_DMO", "True").lower() == "true"
-RUN_CREATE_MAPPING = os.getenv("RUN_CREATE_MAPPING", "True").lower() == "true"
+RUN_CREATE_MAPPING = os.getenv("RUN_CREATE_Mッピング", "True").lower() == "true"
 
 def get_timestamp():
+    """Retorna o timestamp atual formatado para logs."""
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-# --- Funções de API (sem alterações) ---
+# --- Funções de API ---
 def authenticate_jwt(login_url, client_id, username, private_key_file):
     print(f"{get_timestamp()} 🔐  Iniciando autenticação JWT...")
     try:
@@ -113,7 +114,12 @@ def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_n
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     all_successful = True
     for mapping in original_mappings:
-        filtered_fields = [{"sourceFieldDeveloperName": f["sourceFieldDeveloperName"], "targetFieldDeveloperName": f["targetFieldDeveloperName"]} for f in mapping.get("fieldMappings", []) if f["sourceFieldDeveloperName"] not in SYSTEM_FIELDS_TO_EXCLUDE]
+        # AJUSTE: Adicionada a condição para ignorar campos que começam com "KQ_"
+        filtered_fields = [
+            {"sourceFieldDeveloperName": f["sourceFieldDeveloperName"], "targetFieldDeveloperName": f["targetFieldDeveloperName"]}
+            for f in mapping.get("fieldMappings", [])
+            if f["sourceFieldDeveloperName"] not in SYSTEM_FIELDS_TO_EXCLUDE and not f["sourceFieldDeveloperName"].startswith("KQ_")
+        ]
         if not filtered_fields:
             print(f"{get_timestamp()}    - Nenhum campo a ser mapeado para DLO '{mapping.get('sourceEntityDeveloperName')}' após a filtragem.")
             continue
@@ -127,9 +133,8 @@ def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_n
             all_successful = False
     return all_successful
 
-# --- 5. Orquestração Principal (COM LÓGICA CONDICIONAL) ---
+# --- 5. Orquestração Principal ---
 def main():
-    """Função principal que orquestra todo o processo."""
     print("\n" + "="*50)
     print(f"{get_timestamp()} 🚀 Iniciando script...")
     print(f"    - Modo Clonar DMO: {'ATIVADO' if RUN_CLONE_DMO else 'DESATIVADO'}")
@@ -165,7 +170,6 @@ def main():
         dmo_succeeded = False
         mapping_succeeded = False
         
-        # --- ETAPA 1: Clonagem do DMO ---
         if RUN_CLONE_DMO:
             dmo_definition = get_dmo_definition(access_token, instance_url, original_dmo_name)
             if dmo_definition:
@@ -174,24 +178,20 @@ def main():
             else:
                 dmo_succeeded = False
         else:
-            # Se não clonamos, consideramos a etapa "bem-sucedida" para permitir a execução do mapeamento.
             dmo_succeeded = True
             base_api_name = original_dmo_name.replace('__dlm', '')
             new_dmo_name = f"{NEW_DMO_PREFIX}{base_api_name}"
             print(f"{get_timestamp()}    - ⏩ Clonagem de DMO pulada. Usando nome de DMO de destino: {new_dmo_name}")
 
-        # --- ETAPA 2: Criação do Mapeamento ---
         if dmo_succeeded and RUN_CREATE_MAPPING:
             original_mappings = get_dmo_mappings(access_token, instance_url, original_dmo_name)
             if original_mappings is not None:
                 mapping_succeeded = create_new_mappings(access_token, instance_url, original_mappings, new_dmo_name)
             else:
-                # Erro ao buscar mapeamentos é uma falha na etapa
                 mapping_succeeded = False
         elif not RUN_CREATE_MAPPING:
-            mapping_succeeded = True # Se não executamos, consideramos sucesso.
+            mapping_succeeded = True
 
-        # --- Contabilização do Resultado Final ---
         if (RUN_CLONE_DMO and dmo_succeeded and not RUN_CREATE_MAPPING) or \
            (RUN_CREATE_MAPPING and mapping_succeeded and not RUN_CLONE_DMO) or \
            (RUN_CLONE_DMO and dmo_succeeded and RUN_CREATE_MAPPING and mapping_succeeded):
