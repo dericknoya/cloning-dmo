@@ -31,7 +31,7 @@ REQUESTS_TIMEOUT = 90
 
 # --- Modos de Operação ---
 RUN_CLONE_DMO = os.getenv("RUN_CLONE_DMO", "True").lower() == "true"
-RUN_CREATE_MAPPING = os.getenv("RUN_CREATE_Mッピング", "True").lower() == "true"
+RUN_CREATE_MAPPING = os.getenv("RUN_CREATE_MAPPING", "True").lower() == "true"
 
 def get_timestamp():
     """Retorna o timestamp atual formatado para logs."""
@@ -99,7 +99,7 @@ def get_dmo_mappings(access_token, instance_url, original_dmo_name):
         response.raise_for_status()
         data = response.json()
         if data.get("objectSourceTargetMaps"):
-            print(f"{get_timestamp()}    - {len(data['objectSourceTargetMaps'])} mapeamento(s) encontrado(s).")
+            print(f"{get_timestamp()}    - {len(data['objectSourceTargetMaps'])} definições de mapeamento encontradas.")
             return data["objectSourceTargetMaps"]
         else:
             print(f"{get_timestamp()}    - Nenhum mapeamento encontrado para {original_dmo_name}.")
@@ -110,27 +110,47 @@ def get_dmo_mappings(access_token, instance_url, original_dmo_name):
 
 def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_name):
     if not original_mappings: return True
+
+    consolidated_mappings = {}
+    for mapping in original_mappings:
+        dlo_name = mapping.get("sourceEntityDeveloperName")
+        if not dlo_name: continue
+        fields = mapping.get("fieldMappings", [])
+        if dlo_name not in consolidated_mappings:
+            consolidated_mappings[dlo_name] = []
+        consolidated_mappings[dlo_name].extend(fields)
+    
+    print(f"{get_timestamp()}    - {len(consolidated_mappings)} DLO(s) de origem únicos para mapear.")
+
     post_url = f"{instance_url}/services/data/{API_VERSION}/ssot/data-model-object-mappings?dataspace={NEW_DATA_SPACE_NAME}"
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     all_successful = True
-    for mapping in original_mappings:
-        # AJUSTE: Adicionada a condição para ignorar campos que começam com "KQ_"
+
+    for dlo_name, all_fields in consolidated_mappings.items():
+        # AJUSTE: Removida a condição "and not f["sourceFieldDeveloperName"].startswith("KQ_")"
         filtered_fields = [
             {"sourceFieldDeveloperName": f["sourceFieldDeveloperName"], "targetFieldDeveloperName": f["targetFieldDeveloperName"]}
-            for f in mapping.get("fieldMappings", [])
-            if f["sourceFieldDeveloperName"] not in SYSTEM_FIELDS_TO_EXCLUDE and not f["sourceFieldDeveloperName"].startswith("KQ_")
+            for f in all_fields
+            if f.get("sourceFieldDeveloperName") 
+               and f["sourceFieldDeveloperName"] not in SYSTEM_FIELDS_TO_EXCLUDE
         ]
-        if not filtered_fields:
-            print(f"{get_timestamp()}    - Nenhum campo a ser mapeado para DLO '{mapping.get('sourceEntityDeveloperName')}' após a filtragem.")
+        
+        unique_filtered_fields = [dict(t) for t in {tuple(d.items()) for d in filtered_fields}]
+
+        if not unique_filtered_fields:
+            print(f"{get_timestamp()}    - Nenhum campo a ser mapeado para DLO '{dlo_name}' após a filtragem.")
             continue
-        post_payload = {"sourceEntityDeveloperName": mapping.get("sourceEntityDeveloperName"), "targetEntityDeveloperName": f"{new_dmo_name}__dlm", "fieldMapping": filtered_fields}
+        
+        post_payload = {"sourceEntityDeveloperName": dlo_name, "targetEntityDeveloperName": f"{new_dmo_name}__dlm", "fieldMapping": unique_filtered_fields}
+        
         try:
             response = requests.post(post_url, headers=headers, data=json.dumps(post_payload), proxies=proxies, verify=VERIFY_SSL, timeout=REQUESTS_TIMEOUT)
             response.raise_for_status()
-            print(f"{get_timestamp()}    - ✅ POST Mapping bem-sucedido para DLO: {mapping.get('sourceEntityDeveloperName')}")
+            print(f"{get_timestamp()}    - ✅ POST Mapping bem-sucedido para DLO: {dlo_name}")
         except requests.exceptions.HTTPError as e:
-            print(f"{get_timestamp()}    - ❌ ERRO no POST Mapping para DLO '{mapping.get('sourceEntityDeveloperName')}': {e.response.status_code} - {e.response.text}")
+            print(f"{get_timestamp()}    - ❌ ERRO no POST Mapping para DLO '{dlo_name}': {e.response.status_code} - {e.response.text}")
             all_successful = False
+            
     return all_successful
 
 # --- 5. Orquestração Principal ---
@@ -169,6 +189,7 @@ def main():
         
         dmo_succeeded = False
         mapping_succeeded = False
+        new_dmo_name = None
         
         if RUN_CLONE_DMO:
             dmo_definition = get_dmo_definition(access_token, instance_url, original_dmo_name)
@@ -192,15 +213,16 @@ def main():
         elif not RUN_CREATE_MAPPING:
             mapping_succeeded = True
 
-        if (RUN_CLONE_DMO and dmo_succeeded and not RUN_CREATE_MAPPING) or \
-           (RUN_CREATE_MAPPING and mapping_succeeded and not RUN_CLONE_DMO) or \
-           (RUN_CLONE_DMO and dmo_succeeded and RUN_CREATE_MAPPING and mapping_succeeded):
+        process_ok = (not RUN_CLONE_DMO or dmo_succeeded) and \
+                     (not RUN_CREATE_MAPPING or mapping_succeeded)
+
+        if process_ok:
             success_count += 1
         else:
             failure_count += 1
 
     print("\n" + "="*50)
-    print(f"{get_timestamp()} 🎉 Processo de clonagem concluído!")
+    print(f"{get_timestamp()} 🎉 Processo concluído!")
     print(f"  - Total de DMOs na lista: {len(dmo_list)}")
     print(f"  - ✅ Processos concluídos com sucesso: {success_count}")
     print(f"  - ❌ Processos com falha: {failure_count}")
