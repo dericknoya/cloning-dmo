@@ -34,7 +34,6 @@ RUN_CLONE_DMO = os.getenv("RUN_CLONE_DMO", "True").lower() == "true"
 RUN_CREATE_MAPPING = os.getenv("RUN_CREATE_MAPPING", "True").lower() == "true"
 
 def get_timestamp():
-    """Retorna o timestamp atual formatado para logs."""
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 # --- Funções de API ---
@@ -127,7 +126,13 @@ def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_n
     all_successful = True
 
     for dlo_name, all_fields in consolidated_mappings.items():
-        # AJUSTE: Removida a condição "and not f["sourceFieldDeveloperName"].startswith("KQ_")"
+        
+        # --- INÍCIO DA SEÇÃO DE DEPURAÇÃO ---
+        print("\n" + "-"*20 + f" DEPURAÇÃO PARA DLO: {dlo_name} " + "-"*20)
+        print(f"{get_timestamp()}    - CAMPOS CONSOLIDADOS (ANTES DO FILTRO):")
+        print(json.dumps(all_fields, indent=2))
+        # --- FIM DA SEÇÃO DE DEPURAÇÃO ---
+
         filtered_fields = [
             {"sourceFieldDeveloperName": f["sourceFieldDeveloperName"], "targetFieldDeveloperName": f["targetFieldDeveloperName"]}
             for f in all_fields
@@ -135,11 +140,12 @@ def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_n
                and f["sourceFieldDeveloperName"] not in SYSTEM_FIELDS_TO_EXCLUDE
         ]
         
-        unique_filtered_fields = [dict(t) for t in {tuple(d.items()) for d in filtered_fields}]
+        # --- INÍCIO DA SEÇÃO DE DEPURAÇÃO ---
+        print(f"{get_timestamp()}    - CAMPOS APÓS FILTRO (SYSTEM FIELDS):")
+        print(json.dumps(filtered_fields, indent=2))
+        # --- FIM DA SEÇÃO DE DEPURAÇÃO ---
 
-        if not unique_filtered_fields:
-            print(f"{get_timestamp()}    - Nenhum campo a ser mapeado para DLO '{dlo_name}' após a filtragem.")
-            continue
+        unique_filtered_fields = [dict(t) for t in {tuple(d.items()) for d in filtered_fields}]
         
         post_payload = {"sourceEntityDeveloperName": dlo_name, "targetEntityDeveloperName": f"{new_dmo_name}__dlm", "fieldMapping": unique_filtered_fields}
         
@@ -155,6 +161,7 @@ def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_n
 
 # --- 5. Orquestração Principal ---
 def main():
+    # ... (O restante do código permanece o mesmo) ...
     print("\n" + "="*50)
     print(f"{get_timestamp()} 🚀 Iniciando script...")
     print(f"    - Modo Clonar DMO: {'ATIVADO' if RUN_CLONE_DMO else 'DESATIVADO'}")
