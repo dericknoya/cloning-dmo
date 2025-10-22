@@ -54,6 +54,7 @@ def authenticate_jwt(login_url, client_id, username, private_key_file):
         return None, None
 
 def get_dmo_definition(access_token, instance_url, dmo_name):
+    """Busca a definição do DMO (endpoint não é sensível ao data space)"""
     get_url = f"{instance_url}/services/data/{API_VERSION}/ssot/data-model-objects/{dmo_name}"
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
@@ -66,6 +67,7 @@ def get_dmo_definition(access_token, instance_url, dmo_name):
         return None
 
 def create_new_dmo(access_token, instance_url, get_payload, new_dmo_name_base, new_data_space):
+    """Cria um novo DMO com o nome e data space de destino fornecidos."""
     if not get_payload: return None, False
     original_label = get_payload.get('label', '')
 
@@ -78,11 +80,25 @@ def create_new_dmo(access_token, instance_url, get_payload, new_dmo_name_base, n
         "fields": []
     }
     
-    # Esta é a lógica de filtro que devemos replicar no mapeamento
     for field in get_payload.get('fields', []):
         if field.get('creationType') == 'System': 
             continue
-        post_payload["fields"].append({"name": field.get('name', '').replace('__c', ''), "label": field.get('label', ''), "description": field.get('description', ''), "isPrimaryKey": field.get('isPrimaryKey', False), "isDynamicLookup": False, "dataType": field.get('type')})
+        
+        field_name = field.get('name', '')
+        
+        # --- INÍCIO DO AJUSTE DA LÓGICA DO NOME DO CAMPO ---
+        if field_name.startswith('ssot__'):
+            # Regra 1: Para campos 'ssot__', remove apenas o prefixo.
+            # Ex: 'ssot__Id__c' -> 'Id__c'
+            field_name = field_name.replace('ssot__', '', 1) 
+        else:
+            # Regra 2: Para campos custom, remove apenas o sufixo '__c' (conforme postDMO.json).
+            # Ex: 'CustomDMO123__c' -> 'CustomDMO123'
+            if field_name.endswith('__c'):
+                field_name = field_name[:-3] # Remove os últimos 3 caracteres ('__c')
+        # --- FIM DO AJUSTE ---
+
+        post_payload["fields"].append({"name": field_name, "label": field.get('label', ''), "description": field.get('description', ''), "isPrimaryKey": field.get('isPrimaryKey', False), "isDynamicLookup": False, "dataType": field.get('type')})
     
     post_url = f"{instance_url}/services/data/{API_VERSION}/ssot/data-model-objects"
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
@@ -97,9 +113,12 @@ def create_new_dmo(access_token, instance_url, get_payload, new_dmo_name_base, n
         return new_dmo_name_base, False
 
 def get_dmo_mappings(access_token, instance_url, original_dmo_name, source_data_space):
+    """Busca os mapeamentos do DMO de origem no data space de origem."""
     print(f"{get_timestamp()}    - Buscando mapeamentos para DMO '{original_dmo_name}' no Data Space '{source_data_space}'")
+    
     get_url = f"{instance_url}/services/data/{API_VERSION}/ssot/data-model-object-mappings?dataspace={source_data_space}&dmoDeveloperName={original_dmo_name}"
     headers = {"Authorization": f"Bearer {access_token}"}
+    
     try:
         response = requests.get(get_url, headers=headers, proxies=proxies, verify=VERIFY_SSL, timeout=REQUESTS_TIMEOUT)
         response.raise_for_status()
@@ -114,8 +133,8 @@ def get_dmo_mappings(access_token, instance_url, original_dmo_name, source_data_
         print(f"{get_timestamp()}    - ❌ ERRO no GET Mappings para {original_dmo_name}: {e.response.status_code} - {e.response.text}")
         return None
 
-# AJUSTE: Adicionado o parâmetro 'system_target_fields_to_skip'
 def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_name_base, new_data_space, system_target_fields_to_skip):
+    """Cria novos mapeamentos para o DMO de destino no data space de destino."""
     if not original_mappings: return True
 
     consolidated_mappings = {}
@@ -135,7 +154,6 @@ def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_n
 
     for dlo_name, all_fields in consolidated_mappings.items():
         
-        # AJUSTE: Filtra os campos de sistema (baseado no DMO de origem)
         filtered_fields = [
             {"sourceFieldDeveloperName": f["sourceFieldDeveloperName"], "targetFieldDeveloperName": f["targetFieldDeveloperName"]}
             for f in all_fields
@@ -168,13 +186,11 @@ def main():
     print(f"    - Modo Criar Mapeamento: {'ATIVADO' if RUN_CREATE_MAPPING else 'DESATIVADO'}")
     print("="*50)
 
-    # ... (autenticação) ...
     access_token, instance_url = authenticate_jwt(SF_LOGIN_URL, SF_CLIENT_ID, SF_USERNAME, SF_PRIVATE_KEY_FILE)
     if not all([access_token, instance_url]):
         print(f"{get_timestamp()} 🚫  A execução não pode continuar devido à falha na autenticação.")
         return
 
-    # ... (leitura do CSV) ...
     try:
         dmo_df = pd.read_csv(INPUT_CSV_FILE)
         required_cols = ['SourceDmoName', 'SourceDataSpace', 'TargetDmoName', 'TargetDataSpace']
@@ -206,15 +222,12 @@ def main():
         mapping_succeeded = False
         system_target_fields_to_skip = set()
 
-        # AJUSTE: Precisamos da definição do DMO de origem em ambos os modos
-        # para saber quais campos de sistema pular no mapeamento.
         dmo_definition = get_dmo_definition(access_token, instance_url, original_dmo_name)
         if not dmo_definition:
             print(f"{get_timestamp()}    - ❌ ERRO: Não foi possível obter a definição do DMO de origem '{original_dmo_name}'. Pulando esta tarefa.")
             failure_count += 1
             continue
         
-        # Extrai a lista de campos de sistema do DMO de origem
         system_target_fields_to_skip = {f['name'] for f in dmo_definition.get('fields', []) if f.get('creationType') == 'System'}
         print(f"{get_timestamp()}    - (Identificados {len(system_target_fields_to_skip)} campos de sistema para ignorar no mapeamento)")
 
@@ -228,7 +241,6 @@ def main():
         if dmo_succeeded and RUN_CREATE_MAPPING:
             original_mappings = get_dmo_mappings(access_token, instance_url, original_dmo_name, source_data_space)
             if original_mappings is not None:
-                # Passa a lista de campos de sistema para a função de mapeamento
                 mapping_succeeded = create_new_mappings(access_token, instance_url, original_mappings, new_dmo_name_base, new_data_space, system_target_fields_to_skip)
             else:
                 mapping_succeeded = False
