@@ -1,17 +1,2 @@
-DmoDeveloperName
-jornadas_interesses__dlm
-Leads_Viagem__dlm
-ated_recl_ocor_ouvd__dlm
-ated_recl_ocor_ouvd__dlm	Atend Reclamação Ocorrência ouvidoria
-mode_melh_cvsa_rank__dlm	Modelo Melhor Conversa
-Relacionamento_Ita_CPF_Anal_tico__dlm	Relacionamento Itaú CPF Analítico
-mode_cmda_vncl_emdo__dlm	Modelo Camadas e Vínculos Emitido
-Modelo_Pessoa_Consumo_Correntista__dlm	Modelo Pessoa Consumo Correntista
-TBFS4ME_CADA_CONT_CORE_CLIE__dlm	Cadastro Conta Corrente
-Assinatura_Clube_Vinho_Wine__dlm	Assinatura Clube Vinho - Wine
-tbhf9058_info_clie_pmro_60_dia__dlm	Informação Cliente Primeiros 60 Dias
-info_tran_autr_ccre_engagement__dlm	Transação Autorizador CCRE - Engagement
-ssot__Individual__dlm	Individual
-ssot__Individual__dlm	Individual
-informa_o_Cadastral_CHPRAS__dlm	Informação Cadastral CHPRAS
-Operacao_Recuperacao_Credito_Cliente__dlm	Operacao Recuperacao Credito Cliente
+SourceDmoName,SourceDataSpace,TargetDmoName,TargetDataSpace
+iub_ContactPointEmail__dlm,IUBR,iub2_ContactPointEmail__dlm,IUBR

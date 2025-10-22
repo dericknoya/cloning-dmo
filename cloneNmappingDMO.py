@@ -24,9 +24,6 @@ proxies = {'http': PROXY_URL, 'https': PROXY_URL} if USE_PROXY else None
 # --- Constantes Específicas da Tarefa ---
 API_VERSION = "v64.0"
 INPUT_CSV_FILE = "dmo_list.csv"
-NEW_DATA_SPACE_NAME = 'IUBR'
-NEW_DMO_PREFIX = "iub_"
-SYSTEM_FIELDS_TO_EXCLUDE = ("DataSourceObject__c", "DataSource__c", "InternalOrganization__c")
 REQUESTS_TIMEOUT = 90 
 
 # --- Modos de Operação ---
@@ -34,6 +31,7 @@ RUN_CLONE_DMO = os.getenv("RUN_CLONE_DMO", "True").lower() == "true"
 RUN_CREATE_MAPPING = os.getenv("RUN_CREATE_MAPPING", "True").lower() == "true"
 
 def get_timestamp():
+    """Retorna o timestamp atual formatado para logs."""
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 # --- Funções de API ---
@@ -67,31 +65,40 @@ def get_dmo_definition(access_token, instance_url, dmo_name):
         print(f"{get_timestamp()}    - ❌ ERRO no GET DMO para {dmo_name}: {e.response.status_code} - {e.response.text}")
         return None
 
-def create_new_dmo(access_token, instance_url, get_payload):
+def create_new_dmo(access_token, instance_url, get_payload, new_dmo_name_base, new_data_space):
     if not get_payload: return None, False
     original_label = get_payload.get('label', '')
-    original_api_name = get_payload.get('name', '')
-    base_api_name = original_api_name.replace('__dlm', '')
-    post_payload = {"name": f"{NEW_DMO_PREFIX}{base_api_name}", "label": original_label, "description": get_payload.get('description', ''), "dataSpaceName": NEW_DATA_SPACE_NAME, "category": get_payload.get('category', 'OTHER'), "fields": []}
+
+    post_payload = {
+        "name": new_dmo_name_base,
+        "label": original_label, 
+        "description": get_payload.get('description', ''),
+        "dataSpaceName": new_data_space,
+        "category": get_payload.get('category', 'OTHER'),
+        "fields": []
+    }
+    
+    # Esta é a lógica de filtro que devemos replicar no mapeamento
     for field in get_payload.get('fields', []):
-        if field.get('creationType') == 'System': continue
+        if field.get('creationType') == 'System': 
+            continue
         post_payload["fields"].append({"name": field.get('name', '').replace('__c', ''), "label": field.get('label', ''), "description": field.get('description', ''), "isPrimaryKey": field.get('isPrimaryKey', False), "isDynamicLookup": False, "dataType": field.get('type')})
+    
     post_url = f"{instance_url}/services/data/{API_VERSION}/ssot/data-model-objects"
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    
     try:
         response = requests.post(post_url, headers=headers, data=json.dumps(post_payload), proxies=proxies, verify=VERIFY_SSL, timeout=REQUESTS_TIMEOUT)
         response.raise_for_status()
-        new_dmo_name = post_payload.get('name')
-        print(f"{get_timestamp()}    - ✅ POST DMO bem-sucedido! DMO '{new_dmo_name}' criado.")
-        return new_dmo_name, True
+        print(f"{get_timestamp()}    - ✅ POST DMO bem-sucedido! DMO '{new_dmo_name_base}' criado em '{new_data_space}'.")
+        return new_dmo_name_base, True
     except requests.exceptions.HTTPError as e:
-        dmo_name = post_payload.get('name')
-        print(f"{get_timestamp()}    - ❌ ERRO no POST DMO para '{dmo_name}': {e.response.status_code} - {e.response.text}")
-        return dmo_name, False
+        print(f"{get_timestamp()}    - ❌ ERRO no POST DMO para '{new_dmo_name_base}': {e.response.status_code} - {e.response.text}")
+        return new_dmo_name_base, False
 
-def get_dmo_mappings(access_token, instance_url, original_dmo_name):
-    print(f"{get_timestamp()}    - Buscando mapeamentos para o DMO original: {original_dmo_name}")
-    get_url = f"{instance_url}/services/data/{API_VERSION}/ssot/data-model-object-mappings?dataspace=default&dmoDeveloperName={original_dmo_name}"
+def get_dmo_mappings(access_token, instance_url, original_dmo_name, source_data_space):
+    print(f"{get_timestamp()}    - Buscando mapeamentos para DMO '{original_dmo_name}' no Data Space '{source_data_space}'")
+    get_url = f"{instance_url}/services/data/{API_VERSION}/ssot/data-model-object-mappings?dataspace={source_data_space}&dmoDeveloperName={original_dmo_name}"
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
         response = requests.get(get_url, headers=headers, proxies=proxies, verify=VERIFY_SSL, timeout=REQUESTS_TIMEOUT)
@@ -101,13 +108,14 @@ def get_dmo_mappings(access_token, instance_url, original_dmo_name):
             print(f"{get_timestamp()}    - {len(data['objectSourceTargetMaps'])} definições de mapeamento encontradas.")
             return data["objectSourceTargetMaps"]
         else:
-            print(f"{get_timestamp()}    - Nenhum mapeamento encontrado para {original_dmo_name}.")
+            print(f"{get_timestamp()}    - Nenhum mapeamento encontrado para {original_dmo_name} em {source_data_space}.")
             return []
     except requests.exceptions.HTTPError as e:
         print(f"{get_timestamp()}    - ❌ ERRO no GET Mappings para {original_dmo_name}: {e.response.status_code} - {e.response.text}")
         return None
 
-def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_name):
+# AJUSTE: Adicionado o parâmetro 'system_target_fields_to_skip'
+def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_name_base, new_data_space, system_target_fields_to_skip):
     if not original_mappings: return True
 
     consolidated_mappings = {}
@@ -121,33 +129,26 @@ def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_n
     
     print(f"{get_timestamp()}    - {len(consolidated_mappings)} DLO(s) de origem únicos para mapear.")
 
-    post_url = f"{instance_url}/services/data/{API_VERSION}/ssot/data-model-object-mappings?dataspace={NEW_DATA_SPACE_NAME}"
+    post_url = f"{instance_url}/services/data/{API_VERSION}/ssot/data-model-object-mappings?dataspace={new_data_space}"
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     all_successful = True
 
     for dlo_name, all_fields in consolidated_mappings.items():
         
-        # --- INÍCIO DA SEÇÃO DE DEPURAÇÃO ---
-        print("\n" + "-"*20 + f" DEPURAÇÃO PARA DLO: {dlo_name} " + "-"*20)
-        print(f"{get_timestamp()}    - CAMPOS CONSOLIDADOS (ANTES DO FILTRO):")
-        print(json.dumps(all_fields, indent=2))
-        # --- FIM DA SEÇÃO DE DEPURAÇÃO ---
-
+        # AJUSTE: Filtra os campos de sistema (baseado no DMO de origem)
         filtered_fields = [
             {"sourceFieldDeveloperName": f["sourceFieldDeveloperName"], "targetFieldDeveloperName": f["targetFieldDeveloperName"]}
             for f in all_fields
-            if f.get("sourceFieldDeveloperName") 
-               and f["sourceFieldDeveloperName"] not in SYSTEM_FIELDS_TO_EXCLUDE
+            if f.get("sourceFieldDeveloperName") and f.get("targetFieldDeveloperName") not in system_target_fields_to_skip
         ]
         
-        # --- INÍCIO DA SEÇÃO DE DEPURAÇÃO ---
-        print(f"{get_timestamp()}    - CAMPOS APÓS FILTRO (SYSTEM FIELDS):")
-        print(json.dumps(filtered_fields, indent=2))
-        # --- FIM DA SEÇÃO DE DEPURAÇÃO ---
-
         unique_filtered_fields = [dict(t) for t in {tuple(d.items()) for d in filtered_fields}]
+
+        if not unique_filtered_fields:
+            print(f"{get_timestamp()}    - Nenhum campo a ser mapeado para DLO '{dlo_name}' (após filtrar campos de sistema).")
+            continue
         
-        post_payload = {"sourceEntityDeveloperName": dlo_name, "targetEntityDeveloperName": f"{new_dmo_name}__dlm", "fieldMapping": unique_filtered_fields}
+        post_payload = {"sourceEntityDeveloperName": dlo_name, "targetEntityDeveloperName": f"{new_dmo_name_base}__dlm", "fieldMapping": unique_filtered_fields}
         
         try:
             response = requests.post(post_url, headers=headers, data=json.dumps(post_payload), proxies=proxies, verify=VERIFY_SSL, timeout=REQUESTS_TIMEOUT)
@@ -161,60 +162,74 @@ def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_n
 
 # --- 5. Orquestração Principal ---
 def main():
-    # ... (O restante do código permanece o mesmo) ...
     print("\n" + "="*50)
-    print(f"{get_timestamp()} 🚀 Iniciando script...")
+    print(f"{get_timestamp()} 🚀 Iniciando script de clonagem universal...")
     print(f"    - Modo Clonar DMO: {'ATIVADO' if RUN_CLONE_DMO else 'DESATIVADO'}")
     print(f"    - Modo Criar Mapeamento: {'ATIVADO' if RUN_CREATE_MAPPING else 'DESATIVADO'}")
     print("="*50)
 
-    if not RUN_CLONE_DMO and not RUN_CREATE_MAPPING:
-        print(f"{get_timestamp()} ⚠️  Nenhum modo de operação foi ativado. Verifique as variáveis RUN_CLONE_DMO e RUN_CREATE_MAPPING no arquivo .env. Encerrando.")
-        return
-
+    # ... (autenticação) ...
     access_token, instance_url = authenticate_jwt(SF_LOGIN_URL, SF_CLIENT_ID, SF_USERNAME, SF_PRIVATE_KEY_FILE)
     if not all([access_token, instance_url]):
         print(f"{get_timestamp()} 🚫  A execução não pode continuar devido à falha na autenticação.")
         return
 
+    # ... (leitura do CSV) ...
     try:
         dmo_df = pd.read_csv(INPUT_CSV_FILE)
-        if "DmoDeveloperName" not in dmo_df.columns:
-            print(f"{get_timestamp()} ❌ ERRO: O arquivo '{INPUT_CSV_FILE}' deve conter uma coluna chamada 'DmoDeveloperName'.")
+        required_cols = ['SourceDmoName', 'SourceDataSpace', 'TargetDmoName', 'TargetDataSpace']
+        if not all(col in dmo_df.columns for col in required_cols):
+            print(f"{get_timestamp()} ❌ ERRO: O arquivo '{INPUT_CSV_FILE}' deve conter as colunas: {', '.join(required_cols)}")
             return
-        dmo_list = dmo_df["DmoDeveloperName"].dropna().unique().tolist()
-        print(f"\n{get_timestamp()} 📄 Arquivo '{INPUT_CSV_FILE}' carregado. {len(dmo_list)} DMOs únicos para processar.")
+        dmo_df.dropna(subset=required_cols, inplace=True)
+        print(f"\n{get_timestamp()} 📄 Arquivo '{INPUT_CSV_FILE}' carregado. {len(dmo_df)} tarefas de clonagem para processar.")
     except FileNotFoundError:
         print(f"{get_timestamp()} ❌ ERRO: Arquivo '{INPUT_CSV_FILE}' não encontrado.")
+        return
+    except Exception as e:
+        print(f"{get_timestamp()} ❌ ERRO ao ler CSV: {e}")
         return
 
     success_count = 0
     failure_count = 0
     
-    for original_dmo_name in tqdm(dmo_list, desc=f"{get_timestamp()} Processando DMOs"):
-        print(f"\n{get_timestamp()} 🔄 Iniciando processamento para: {original_dmo_name}")
+    for _, row in tqdm(dmo_df.iterrows(), total=dmo_df.shape[0], desc=f"{get_timestamp()} Processando DMOs"):
+        
+        original_dmo_name = row['SourceDmoName']
+        source_data_space = row['SourceDataSpace']
+        new_dmo_name_base = row['TargetDmoName'].replace('__dlm', '') 
+        new_data_space = row['TargetDataSpace']
+        
+        print(f"\n{get_timestamp()} 🔄 Iniciando tarefa: Clonar '{original_dmo_name}' ({source_data_space}) para '{new_dmo_name_base}' ({new_data_space})")
         
         dmo_succeeded = False
         mapping_succeeded = False
-        new_dmo_name = None
+        system_target_fields_to_skip = set()
+
+        # AJUSTE: Precisamos da definição do DMO de origem em ambos os modos
+        # para saber quais campos de sistema pular no mapeamento.
+        dmo_definition = get_dmo_definition(access_token, instance_url, original_dmo_name)
+        if not dmo_definition:
+            print(f"{get_timestamp()}    - ❌ ERRO: Não foi possível obter a definição do DMO de origem '{original_dmo_name}'. Pulando esta tarefa.")
+            failure_count += 1
+            continue
         
+        # Extrai a lista de campos de sistema do DMO de origem
+        system_target_fields_to_skip = {f['name'] for f in dmo_definition.get('fields', []) if f.get('creationType') == 'System'}
+        print(f"{get_timestamp()}    - (Identificados {len(system_target_fields_to_skip)} campos de sistema para ignorar no mapeamento)")
+
         if RUN_CLONE_DMO:
-            dmo_definition = get_dmo_definition(access_token, instance_url, original_dmo_name)
-            if dmo_definition:
-                new_dmo_name, created = create_new_dmo(access_token, instance_url, dmo_definition)
-                dmo_succeeded = created
-            else:
-                dmo_succeeded = False
+            new_dmo_name, created = create_new_dmo(access_token, instance_url, dmo_definition, new_dmo_name_base, new_data_space)
+            dmo_succeeded = created
         else:
             dmo_succeeded = True
-            base_api_name = original_dmo_name.replace('__dlm', '')
-            new_dmo_name = f"{NEW_DMO_PREFIX}{base_api_name}"
-            print(f"{get_timestamp()}    - ⏩ Clonagem de DMO pulada. Usando nome de DMO de destino: {new_dmo_name}")
+            print(f"{get_timestamp()}    - ⏩ Clonagem de DMO pulada. Assumindo que o DMO de destino '{new_dmo_name_base}' já existe.")
 
         if dmo_succeeded and RUN_CREATE_MAPPING:
-            original_mappings = get_dmo_mappings(access_token, instance_url, original_dmo_name)
+            original_mappings = get_dmo_mappings(access_token, instance_url, original_dmo_name, source_data_space)
             if original_mappings is not None:
-                mapping_succeeded = create_new_mappings(access_token, instance_url, original_mappings, new_dmo_name)
+                # Passa a lista de campos de sistema para a função de mapeamento
+                mapping_succeeded = create_new_mappings(access_token, instance_url, original_mappings, new_dmo_name_base, new_data_space, system_target_fields_to_skip)
             else:
                 mapping_succeeded = False
         elif not RUN_CREATE_MAPPING:
@@ -230,7 +245,7 @@ def main():
 
     print("\n" + "="*50)
     print(f"{get_timestamp()} 🎉 Processo concluído!")
-    print(f"  - Total de DMOs na lista: {len(dmo_list)}")
+    print(f"  - Total de tarefas na lista: {len(dmo_df)}")
     print(f"  - ✅ Processos concluídos com sucesso: {success_count}")
     print(f"  - ❌ Processos com falha: {failure_count}")
     print("="*50)
