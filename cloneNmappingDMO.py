@@ -54,7 +54,6 @@ def authenticate_jwt(login_url, client_id, username, private_key_file):
         return None, None
 
 def get_dmo_definition(access_token, instance_url, dmo_name):
-    """Busca a definição do DMO (endpoint não é sensível ao data space)"""
     get_url = f"{instance_url}/services/data/{API_VERSION}/ssot/data-model-objects/{dmo_name}"
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
@@ -67,36 +66,27 @@ def get_dmo_definition(access_token, instance_url, dmo_name):
         return None
 
 def create_new_dmo(access_token, instance_url, get_payload, new_dmo_name_base, new_data_space):
-    """Cria um novo DMO com o nome e data space de destino fornecidos."""
     if not get_payload: return None, False
     original_label = get_payload.get('label', '')
 
     post_payload = {
-        "name": new_dmo_name_base,
-        "label": original_label, 
-        "description": get_payload.get('description', ''),
-        "dataSpaceName": new_data_space,
-        "category": get_payload.get('category', 'OTHER'),
-        "fields": []
+        "name": new_dmo_name_base, "label": original_label, 
+        "description": get_payload.get('description', ''), "dataSpaceName": new_data_space,
+        "category": get_payload.get('category', 'OTHER'), "fields": []
     }
     
     for field in get_payload.get('fields', []):
-        if field.get('creationType') == 'System': 
+        # AJUSTE 1: Não pular o campo se for 'System' E 'PrimaryKey'
+        if field.get('creationType') == 'System' and not field.get('isPrimaryKey', False): 
             continue
         
         field_name = field.get('name', '')
         
-        # --- INÍCIO DO AJUSTE DA LÓGICA DO NOME DO CAMPO ---
         if field_name.startswith('ssot__'):
-            # Regra 1: Para campos 'ssot__', remove apenas o prefixo.
-            # Ex: 'ssot__Id__c' -> 'Id__c'
             field_name = field_name.replace('ssot__', '', 1) 
         else:
-            # Regra 2: Para campos custom, remove apenas o sufixo '__c' (conforme postDMO.json).
-            # Ex: 'CustomDMO123__c' -> 'CustomDMO123'
             if field_name.endswith('__c'):
-                field_name = field_name[:-3] # Remove os últimos 3 caracteres ('__c')
-        # --- FIM DO AJUSTE ---
+                field_name = field_name[:-3]
 
         post_payload["fields"].append({"name": field_name, "label": field.get('label', ''), "description": field.get('description', ''), "isPrimaryKey": field.get('isPrimaryKey', False), "isDynamicLookup": False, "dataType": field.get('type')})
     
@@ -113,12 +103,9 @@ def create_new_dmo(access_token, instance_url, get_payload, new_dmo_name_base, n
         return new_dmo_name_base, False
 
 def get_dmo_mappings(access_token, instance_url, original_dmo_name, source_data_space):
-    """Busca os mapeamentos do DMO de origem no data space de origem."""
     print(f"{get_timestamp()}    - Buscando mapeamentos para DMO '{original_dmo_name}' no Data Space '{source_data_space}'")
-    
     get_url = f"{instance_url}/services/data/{API_VERSION}/ssot/data-model-object-mappings?dataspace={source_data_space}&dmoDeveloperName={original_dmo_name}"
     headers = {"Authorization": f"Bearer {access_token}"}
-    
     try:
         response = requests.get(get_url, headers=headers, proxies=proxies, verify=VERIFY_SSL, timeout=REQUESTS_TIMEOUT)
         response.raise_for_status()
@@ -134,7 +121,6 @@ def get_dmo_mappings(access_token, instance_url, original_dmo_name, source_data_
         return None
 
 def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_name_base, new_data_space, system_target_fields_to_skip):
-    """Cria novos mapeamentos para o DMO de destino no data space de destino."""
     if not original_mappings: return True
 
     consolidated_mappings = {}
@@ -154,11 +140,28 @@ def create_new_mappings(access_token, instance_url, original_mappings, new_dmo_n
 
     for dlo_name, all_fields in consolidated_mappings.items():
         
-        filtered_fields = [
-            {"sourceFieldDeveloperName": f["sourceFieldDeveloperName"], "targetFieldDeveloperName": f["targetFieldDeveloperName"]}
-            for f in all_fields
-            if f.get("sourceFieldDeveloperName") and f.get("targetFieldDeveloperName") not in system_target_fields_to_skip
-        ]
+        filtered_fields = []
+        for f in all_fields:
+            source_field = f.get("sourceFieldDeveloperName")
+            target_field_original = f.get("targetFieldDeveloperName")
+
+            # Pula se não for válido ou for um campo de sistema não-PK
+            if not source_field or target_field_original in system_target_fields_to_skip:
+                continue
+            
+            # AJUSTE 2: Aplica a mesma lógica de transformação de 'create_new_dmo'
+            # ao nome do campo de destino.
+            target_field_new = target_field_original
+            if target_field_new.startswith('ssot__'):
+                target_field_new = target_field_new.replace('ssot__', '', 1) 
+            else:
+                if target_field_new.endswith('__c'):
+                    target_field_new = target_field_new[:-3]
+            
+            filtered_fields.append({
+                "sourceFieldDeveloperName": source_field, 
+                "targetFieldDeveloperName": target_field_new
+            })
         
         unique_filtered_fields = [dict(t) for t in {tuple(d.items()) for d in filtered_fields}]
 
@@ -228,8 +231,12 @@ def main():
             failure_count += 1
             continue
         
-        system_target_fields_to_skip = {f['name'] for f in dmo_definition.get('fields', []) if f.get('creationType') == 'System'}
-        print(f"{get_timestamp()}    - (Identificados {len(system_target_fields_to_skip)} campos de sistema para ignorar no mapeamento)")
+        # AJUSTE 3: A lista de campos a pular agora respeita a regra da Chave Primária
+        system_target_fields_to_skip = {
+            f['name'] for f in dmo_definition.get('fields', []) 
+            if f.get('creationType') == 'System' and not f.get('isPrimaryKey', False)
+        }
+        print(f"{get_timestamp()}    - (Identificados {len(system_target_fields_to_skip)} campos de sistema não-PK para ignorar no mapeamento)")
 
         if RUN_CLONE_DMO:
             new_dmo_name, created = create_new_dmo(access_token, instance_url, dmo_definition, new_dmo_name_base, new_data_space)
